@@ -3,6 +3,10 @@ import numpy as np
 import torch, h5py, os
 from collections import namedtuple
 
+dict_index_of_road_segment_in_neighborhood = {}     # check isme 0 hai kya koi (0 that has non 0 nbrs)
+# road_nbrs = {}
+unique_roads = set()
+
 def argsort(seq):
     """
     sort by length in reverse order
@@ -19,8 +23,8 @@ def pad_array(a, max_length, PAD=0):
     """
     return np.concatenate((a, [PAD]*(max_length - len(a))))
 
-def pad_arrays(a):
-    max_length = max(map(len, a))
+def pad_arrays(a):      # a is array of trips (which are also arrays)
+    max_length = max(map(len, a))   # longest trip length
     a = [pad_array(a[i], max_length) for i in range(len(a))]
     a = np.stack(a).astype(np.int)
     return torch.LongTensor(a)
@@ -29,7 +33,7 @@ def pad_arrays(a):
 
 
 class SlotData():
-    def __init__(self, trips, times, ratios, S, distances, maxlen=200):
+    def __init__(self, trips, times, ratios, S, distances, destinations, maxlen=200):
         """
         trips (n, *): each element is a sequence of road segments
         times (n, ): each element is a travel cost
@@ -42,6 +46,7 @@ class SlotData():
         self.times = times[idx]
         self.ratios = ratios[idx]
         self.distances = distances[idx]
+        self.destinations = destinations[idx]   ###VVV
         self.S = torch.tensor(S, dtype=torch.float32)
         ## (1, num_channel, height, width)
         if self.S.dim() == 2:
@@ -54,7 +59,7 @@ class SlotData():
         self.times = torch.tensor(self.times[idx], dtype=torch.float32)
         self.ratios = torch.tensor(self.ratios[idx], dtype=torch.float32)
         self.distances = torch.tensor(self.distances[idx], dtype=torch.float32)
-
+        self.destinations = torch.tensor(self.destinations[idx], dtype=torch.float32)  # CHECK - 2X__ tensor ###VVV
         self.ntrips = len(self.trips)
         self.start = 0
 
@@ -70,19 +75,21 @@ class SlotData():
           SD.ratios (batch_size, seq_len)
           SD.S (num_channel, height, width)
         """
-        SD = namedtuple('SD', ['trips', 'times', 'ratios', 'S', 'distances'])
+        SD = namedtuple('SD', ['trips', 'times', 'ratios', 'S', 'distances', 'destinations'])   ###VVV
         start = np.random.choice(max(1, self.ntrips-batch_size+1))
         end = min(start+batch_size, self.ntrips)
 
         trips = pad_arrays(self.trips[start:end])
         times = self.times[start:end]
         distances = self.distances[start:end]
+        destinations = self.destinations[start:end]     ###VVV
+
         ratios = torch.ones(trips.shape)
         ratios[:, 0] = self.ratios[start:end, 0]
         row_idx = list(range(trips.shape[0]))
         col_idx = list(map(lambda t:len(t)-1, self.trips[start:end]))
         ratios[row_idx, col_idx] = self.ratios[start:end, 1]
-        return SD(trips=trips, times=times, ratios=ratios, S=self.S, distances=distances)
+        return SD(trips=trips, times=times, ratios=ratios, S=self.S, distances=distances, destinations=destinations) ###VVV
 
     def order_emit(self, batch_size):
         """
@@ -101,7 +108,7 @@ class SlotData():
         if self.start >= self.ntrips:
             self.start = 0
             return None
-        SD = namedtuple('SD', ['trips', 'times', 'ratios', 'S', 'distances'])
+        SD = namedtuple('SD', ['trips', 'times', 'ratios', 'S', 'distances', 'destinations']) ###VVV
         start = self.start
         end = min(start+batch_size, self.ntrips)
         self.start += batch_size
@@ -109,12 +116,14 @@ class SlotData():
         trips = pad_arrays(self.trips[start:end])
         times = self.times[start:end]
         distances = self.distances[start:end]
+        destinations = self.destinations[start:end]  ###VVV
+
         ratios = torch.ones(trips.shape)
         ratios[:, 0] = self.ratios[start:end, 0]
         row_idx = list(range(trips.shape[0]))
         col_idx = list(map(lambda t:len(t)-1, self.trips[start:end]))
         ratios[row_idx, col_idx] = self.ratios[start:end, 1]
-        return SD(trips=trips, times=times, ratios=ratios, S=self.S, distances=distances)
+        return SD(trips=trips, times=times, ratios=ratios, S=self.S, distances=distances, destinations=destinations)   ###VVV
 
 
 class DataLoader():
@@ -139,7 +148,9 @@ class DataLoader():
         should only be called by `read_files()`.
         """
         with h5py.File(fname) as f:
-            for slot in range(1, self.num_slot+1):
+            for slot in range(1, 5):    ###VVV
+            # for slot in range(1, self.num_slot+1):
+                print("slot {}".format(slot))
                 S = np.rot90(f["/{}/S".format(slot)][...]).copy()
                 n = f["/{}/ntrips".format(slot)][...]
                 if n == 0: continue
@@ -147,9 +158,27 @@ class DataLoader():
                 times = [f["/{}/time/{}".format(slot, i)][...] for i in range(1, n+1)]
                 ratios = [f["/{}/ratio/{}".format(slot, i)][...] for i in range(1, n+1)]
                 distances = [f["/{}/distance/{}".format(slot, i)][...] for i in range(1, n+1)]
+                destinations = [f["/{}/dest/{}".format(slot,i)][...] for i in range(1,n+1)]
+                #####
+                for trip  in trips:
+                    list_roads_in_trip = trip.tolist()
+                    for road_i, road_i_plus1 in zip(list_roads_in_trip, list_roads_in_trip[1:]):
+                        unique_roads.add(road_i)
+                        unique_roads.add(road_i_plus1)
+
+                        if (road_i not in dict_index_of_road_segment_in_neighborhood):
+                            # road_nbrs[road_i] = set()
+                            dict_index_of_road_segment_in_neighborhood[road_i] ={}
+
+
+                        # road_nbrs[road_i].add(road_i_plus1)
+
+                        if(road_i_plus1 not in dict_index_of_road_segment_in_neighborhood[road_i]):
+                            dict_index_of_road_segment_in_neighborhood[road_i][road_i_plus1] = len(dict_index_of_road_segment_in_neighborhood[road_i])
+                #####
                 self.slotdata_pool.append(
                     SlotData(np.array(trips), np.array(times), np.array(ratios), S,
-                             np.array(distances)))
+                             np.array(distances), np.array(destinations)))
 
     def read_files(self, fname_lst):
         """
@@ -160,6 +189,7 @@ class DataLoader():
             print("Reading {}...".format(fname))
             self.read_file(os.path.join(self.trainpath, fname))
             print("Done.")
+            break       ##VVV
         self.weights = np.array(list(map(lambda s:s.ntrips, self.slotdata_pool)))
         self.weights = self.weights / np.sum(self.weights)
         self.length = len(self.weights)
